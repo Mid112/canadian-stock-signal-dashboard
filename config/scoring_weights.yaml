@@ -1,0 +1,6 @@
+momentum: 0.25
+trend: 0.20
+volume: 0.20
+rsi: 0.15
+sector_strength: 0.10
+benchmark_relative: 0.10

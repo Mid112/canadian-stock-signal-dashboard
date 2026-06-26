@@ -1,0 +1,42 @@
+benchmark: XIC.TO
+
+sector_etfs:
+  Energy: XEG.TO
+  Financials: XFN.TO
+  Industrials: XIN.TO
+  Technology: XIT.TO
+  Utilities: XUT.TO
+  Pipelines: XEI.TO
+  Railways: XIC.TO
+
+watchlist:
+  - ticker: SU.TO
+    name: Suncor Energy
+    sector: Energy
+  - ticker: CNQ.TO
+    name: Canadian Natural Resources
+    sector: Energy
+  - ticker: RY.TO
+    name: Royal Bank of Canada
+    sector: Financials
+  - ticker: TD.TO
+    name: Toronto-Dominion Bank
+    sector: Financials
+  - ticker: SHOP.TO
+    name: Shopify
+    sector: Technology
+  - ticker: CNR.TO
+    name: Canadian National Railway
+    sector: Railways
+  - ticker: ENB.TO
+    name: Enbridge
+    sector: Pipelines
+  - ticker: BNS.TO
+    name: Bank of Nova Scotia
+    sector: Financials
+  - ticker: BMO.TO
+    name: Bank of Montreal
+    sector: Financials
+  - ticker: CP.TO
+    name: Canadian Pacific Kansas City
+    sector: Railways

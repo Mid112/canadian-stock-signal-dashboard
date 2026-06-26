@@ -6,11 +6,24 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import streamlit as st
 from datetime import datetime, timedelta
+from pathlib import Path
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+import yaml
 import warnings
 warnings.filterwarnings('ignore')
+
+# Config files keep the MVP watchlist and scoring weights editable without
+# changing application code.
+CONFIG_DIR = Path(__file__).parent / "config"
+WATCHLIST_PATH = CONFIG_DIR / "watchlist.yaml"
+WEIGHTS_PATH = CONFIG_DIR / "scoring_weights.yaml"
+OUTLOOK_WINDOWS = {
+    "Weekly (5 trading days)": 5,
+    "Biweekly (10 trading days)": 10,
+    "Short monthly (20 trading days)": 20,
+}
 
 # Configure Streamlit page
 st.set_page_config(
@@ -143,7 +156,9 @@ class StockAnalyzer:
         if len(feature_cols) < 5:
             return None
         
-        X = df[feature_cols].fillna(method='ffill').fillna(method='bfill')
+        # pandas 3 removed fillna(method=...), so use the direct forward/back
+        # fill helpers for compatibility with the current dependency set.
+        X = df[feature_cols].ffill().bfill()
         y = df['Close'].shift(-1)  # Predict next day's close
         
         # Remove last row (no target) and any remaining NaN
@@ -465,48 +480,315 @@ def create_performance_metrics(data, symbol):
     
     st.plotly_chart(fig, use_container_width=True)
 
+
+def load_yaml_config(path, fallback):
+    """Load a small YAML config file with a safe fallback."""
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            return yaml.safe_load(file) or fallback
+    except FileNotFoundError:
+        st.warning(f"Config file not found: {path}")
+        return fallback
+    except yaml.YAMLError as exc:
+        st.warning(f"Could not parse {path.name}: {exc}")
+        return fallback
+
+
+def load_watchlist_config():
+    # Fallback keeps the app usable if the YAML file is missing or malformed.
+    fallback = {
+        "benchmark": "XIC.TO",
+        "sector_etfs": {},
+        "watchlist": [
+            {"ticker": "RY.TO", "name": "Royal Bank of Canada", "sector": "Financials"},
+            {"ticker": "TD.TO", "name": "Toronto-Dominion Bank", "sector": "Financials"},
+            {"ticker": "SHOP.TO", "name": "Shopify", "sector": "Technology"},
+        ],
+    }
+    return load_yaml_config(WATCHLIST_PATH, fallback)
+
+
+def load_scoring_weights():
+    # Weights are normalized below so the score formula remains stable if the
+    # config values do not add up to exactly 1.0.
+    fallback = {
+        "momentum": 0.25,
+        "trend": 0.20,
+        "volume": 0.20,
+        "rsi": 0.15,
+        "sector_strength": 0.10,
+        "benchmark_relative": 0.10,
+    }
+    weights = load_yaml_config(WEIGHTS_PATH, fallback)
+    total = sum(float(value) for value in weights.values()) or 1
+    return {key: float(value) / total for key, value in weights.items()}
+
+
+@st.cache_data(ttl=900)
+def fetch_history(symbol, period):
+    stock = yf.Ticker(symbol)
+    return stock.history(period=period)
+
+
+def clip_score(value):
+    if pd.isna(value) or np.isinf(value):
+        return 0.0
+    return float(np.clip(value, -1, 1))
+
+
+def normalize_return(value, strong_move=0.08):
+    # Convert raw returns into the internal -1..+1 scale. The strong_move
+    # threshold controls what counts as a full-strength bullish/bearish move.
+    return clip_score(value / strong_move)
+
+
+def calculate_return(data, window):
+    if data is None or len(data) <= window:
+        return np.nan
+    previous_close = data["Close"].iloc[-window - 1]
+    if previous_close == 0 or pd.isna(previous_close):
+        return np.nan
+    return (data["Close"].iloc[-1] - previous_close) / previous_close
+
+
+def calculate_rsi_score(rsi):
+    # Reward the healthy bullish zone, but penalize overheated RSI readings so
+    # the ranking does not blindly chase extended moves.
+    if pd.isna(rsi):
+        return 0.0
+    if 50 <= rsi <= 70:
+        return 0.8
+    if 40 <= rsi < 50:
+        return 0.2
+    if 30 <= rsi < 40:
+        return -0.2
+    if 70 < rsi <= 80:
+        return 0.3
+    if rsi > 80:
+        return -0.4
+    return -0.5
+
+
+def calculate_trend_score(latest):
+    # Short-term ranking leans most on price vs SMA20 and SMA20 vs SMA50, while
+    # SMA200 acts as broader trend confirmation when enough history exists.
+    score = 0
+    close = latest.get("Close")
+    sma_20 = latest.get("SMA_20")
+    sma_50 = latest.get("SMA_50")
+    sma_200 = latest.get("SMA_200")
+
+    if pd.notna(close) and pd.notna(sma_20):
+        score += 0.35 if close > sma_20 else -0.35
+    if pd.notna(sma_20) and pd.notna(sma_50):
+        score += 0.35 if sma_20 > sma_50 else -0.35
+    if pd.notna(sma_50) and pd.notna(sma_200):
+        score += 0.30 if sma_50 > sma_200 else -0.30
+    return clip_score(score)
+
+
+def calculate_signal_tier(score):
+    if score >= 80:
+        return "Strong Buy Candidate"
+    if score >= 60:
+        return "Watch Closely"
+    if score >= 40:
+        return "Neutral"
+    if score >= 20:
+        return "Weak"
+    return "Bearish / Ignore"
+
+
+def generate_signal_explanation(row, window_label):
+    reasons = []
+    if row["Benchmark Relative Strength"] > 0:
+        reasons.append("outperforming XIC.TO")
+    if row["Volume Ratio"] >= 1.5:
+        reasons.append("above-average volume")
+    if 50 <= row["RSI"] <= 70:
+        reasons.append("healthy RSI")
+    if row["MA Trend Score"] > 0.3:
+        reasons.append("positive moving-average trend")
+    if row["Sector Strength"] > 0:
+        reasons.append("sector support")
+
+    if not reasons:
+        return f"{row['Ticker']} has mixed or weak {window_label.lower()} signals versus the watchlist."
+
+    return f"{row['Ticker']} ranks well for the {window_label.lower()} outlook due to " + ", ".join(reasons[:3]) + "."
+
+
+def score_watchlist(analyzer, watchlist_config, weights, period, selected_window):
+    benchmark = watchlist_config.get("benchmark", "XIC.TO")
+    sector_etfs = watchlist_config.get("sector_etfs", {})
+    watchlist = watchlist_config.get("watchlist", [])
+
+    # Fetch each symbol once per run, including benchmark and sector ETFs used
+    # for relative-strength comparisons.
+    needed_symbols = {benchmark}
+    needed_symbols.update(item["ticker"] for item in watchlist)
+    needed_symbols.update(sector_etfs.get(item.get("sector")) for item in watchlist if sector_etfs.get(item.get("sector")))
+
+    histories = {}
+    for symbol in sorted(needed_symbols):
+        try:
+            data = fetch_history(symbol, period)
+            if data is not None and not data.empty:
+                histories[symbol] = analyzer.calculate_technical_indicators(data)
+        except Exception:
+            histories[symbol] = pd.DataFrame()
+
+    benchmark_data = histories.get(benchmark)
+    rows = []
+
+    for item in watchlist:
+        ticker = item["ticker"]
+        data = histories.get(ticker)
+        if data is None or data.empty or len(data) <= 50:
+            continue
+
+        latest = data.iloc[-1]
+        sector = item.get("sector", "Unknown")
+        sector_symbol = sector_etfs.get(sector, benchmark)
+        sector_data = histories.get(sector_symbol)
+        volume_ratio = latest.get("Volume_ratio", 1)
+        rsi = latest.get("RSI", np.nan)
+        trend_score = calculate_trend_score(latest)
+        volume_score = clip_score((volume_ratio - 1) / 2)
+        rsi_score = calculate_rsi_score(rsi)
+
+        row = {
+            "Ticker": ticker,
+            "Company": item.get("name", ticker),
+            "Sector": sector,
+            "Price": latest["Close"],
+            "RSI": rsi,
+            "Volume Ratio": volume_ratio,
+            "MA Trend Score": trend_score,
+        }
+
+        for label, window in OUTLOOK_WINDOWS.items():
+            stock_return = calculate_return(data, window)
+            benchmark_return = calculate_return(benchmark_data, window)
+            sector_return = calculate_return(sector_data, window)
+            benchmark_relative = stock_return - benchmark_return if pd.notna(benchmark_return) else 0
+            sector_strength = sector_return - benchmark_return if pd.notna(sector_return) and pd.notna(benchmark_return) else 0
+
+            # Quantitative inputs decide the ranking. Fundamentals and ML
+            # prediction stay in the detail view as context, not score drivers.
+            raw_score = (
+                weights["momentum"] * normalize_return(stock_return)
+                + weights["trend"] * trend_score
+                + weights["volume"] * volume_score
+                + weights["rsi"] * rsi_score
+                + weights["sector_strength"] * normalize_return(sector_strength, 0.05)
+                + weights["benchmark_relative"] * normalize_return(benchmark_relative, 0.05)
+            )
+            final_score = round((raw_score + 1) * 50, 1)
+            prefix = f"{window}D"
+            row[f"{prefix} Momentum"] = stock_return
+            row[f"{prefix} Score"] = final_score
+            row[f"{prefix} Benchmark Relative"] = benchmark_relative
+            row[f"{prefix} Sector Strength"] = sector_strength
+
+        # Keep all window scores, but rank by the user-selected outlook.
+        score_col = f"{selected_window}D Score"
+        row["Selected Score"] = row[score_col]
+        row["Signal Tier"] = calculate_signal_tier(row["Selected Score"])
+        row["Benchmark Relative Strength"] = row[f"{selected_window}D Benchmark Relative"]
+        row["Sector Strength"] = row[f"{selected_window}D Sector Strength"]
+        rows.append(row)
+
+    ranking = pd.DataFrame(rows)
+    if ranking.empty:
+        return ranking
+
+    ranking = ranking.sort_values("Selected Score", ascending=False).reset_index(drop=True)
+    ranking.insert(0, "Rank", ranking.index + 1)
+    return ranking
+
+
+def display_ranked_dashboard(ranking, selected_window, window_label):
+    if ranking.empty:
+        st.warning("No watchlist data available yet. Try a longer period or refresh data.")
+        return
+
+    st.subheader("Canadian Watchlist Signal Ranking")
+    st.caption("Scores rank short-term signal strength against the watchlist and XIC.TO. Research only, not financial advice.")
+
+    display_columns = [
+        "Rank", "Ticker", "Company", "Sector", "Selected Score", "Signal Tier",
+        "5D Momentum", "10D Momentum", "20D Momentum", "RSI", "Volume Ratio",
+        "Benchmark Relative Strength", "Sector Strength",
+    ]
+    # Format only the displayed copy so the underlying ranking DataFrame keeps
+    # numeric values for explanations and future backtesting.
+    formatted = ranking[display_columns].copy()
+    percent_columns = [
+        "5D Momentum", "10D Momentum", "20D Momentum",
+        "Benchmark Relative Strength", "Sector Strength",
+    ]
+    for column in percent_columns:
+        formatted[column] = formatted[column].map(lambda value: f"{value:+.2%}" if pd.notna(value) else "N/A")
+    formatted["RSI"] = formatted["RSI"].map(lambda value: f"{value:.1f}" if pd.notna(value) else "N/A")
+    formatted["Volume Ratio"] = formatted["Volume Ratio"].map(lambda value: f"{value:.2f}x" if pd.notna(value) else "N/A")
+    formatted["Selected Score"] = formatted["Selected Score"].map(lambda value: f"{value:.1f}")
+
+    st.dataframe(formatted, use_container_width=True, hide_index=True)
+
+    top_rows = ranking.head(3).copy()
+    if not top_rows.empty:
+        st.write("### Top Signal Notes")
+        for _, row in top_rows.iterrows():
+            st.info(generate_signal_explanation(row, window_label))
+
 # Streamlit App
 def main():
-    st.title("🚀 Professional AI Stock Market Dashboard")
-    st.markdown("*Advanced technical analysis with machine learning predictions*")
+    st.title("🚀 Canadian Stock Signal Intelligence")
+    st.markdown("*Rank TSX watchlist opportunities by short-term signal strength, with technical detail and retained ML price prediction.*")
     
     # Sidebar
-    st.sidebar.header("📊 Dashboard Controls")
+    st.sidebar.header("📊 Signal Controls")
     st.sidebar.markdown("---")
+
+    watchlist_config = load_watchlist_config()
+    weights = load_scoring_weights()
+    watchlist = watchlist_config.get("watchlist", [])
     
-    # Stock selection with popular choices
-    popular_stocks = {
-        'Apple': 'AAPL', 'Microsoft': 'MSFT', 'Google': 'GOOGL', 
-        'Amazon': 'AMZN', 'Tesla': 'TSLA', 'NVIDIA': 'NVDA',
-        'Meta': 'META', 'Netflix': 'NFLX', 'AMD': 'AMD', 'Intel': 'INTC'
-    }
+    outlook_label = st.sidebar.selectbox(
+        "🎯 Outlook Window:",
+        options=list(OUTLOOK_WINDOWS.keys()),
+        index=1
+    )
+    selected_window = OUTLOOK_WINDOWS[outlook_label]
     
-    stock_choice = st.sidebar.selectbox(
-        "🏢 Select Stock:",
-        options=list(popular_stocks.keys()) + ['Custom'],
+    period = st.sidebar.selectbox(
+        "📅 Data Period:",
+        options=['6mo', '1y', '2y', '5y'],
+        index=1
+    )
+
+    ticker_options = {f"{item.get('ticker')} - {item.get('name', item.get('ticker'))}": item.get("ticker") for item in watchlist}
+    selected_stock_label = st.sidebar.selectbox(
+        "🏢 Detail Stock:",
+        options=list(ticker_options.keys()) + ["Custom"],
         index=0
     )
-    
-    if stock_choice == 'Custom':
-        symbol = st.sidebar.text_input("Enter Stock Symbol:", value="AAPL", max_chars=10).upper()
+
+    if selected_stock_label == "Custom":
+        symbol = st.sidebar.text_input("Enter Stock Symbol:", value="RY.TO", max_chars=12).upper()
     else:
-        symbol = popular_stocks[stock_choice]
-    
-    # Time period
-    period = st.sidebar.selectbox(
-        "📅 Analysis Period:",
-        options=['1mo', '3mo', '6mo', '1y', '2y', '5y'],
-        index=3
-    )
+        symbol = ticker_options[selected_stock_label]
     
     st.sidebar.markdown("---")
     
     # Analysis options
     st.sidebar.subheader("🔧 Analysis Options")
-    show_prediction = st.sidebar.checkbox("🔮 ML Price Prediction", value=True)
+    show_ranking = st.sidebar.checkbox("🏆 Watchlist Ranking", value=True)
     show_technical = st.sidebar.checkbox("📈 Technical Charts", value=True)
     show_performance = st.sidebar.checkbox("📊 Performance Metrics", value=True)
     show_analysis = st.sidebar.checkbox("🧠 AI Market Analysis", value=True)
+    show_prediction = st.sidebar.checkbox("🔮 ML Price Prediction", value=True)
     
     st.sidebar.markdown("---")
     
@@ -516,6 +798,15 @@ def main():
     
     # Initialize analyzer
     analyzer = StockAnalyzer()
+
+    # The ranking is the MVP's primary workflow. The selected-stock detail below
+    # retains the original chart, ML prediction, and fundamentals experience.
+    if show_ranking:
+        with st.spinner("📡 Scoring Canadian watchlist against XIC.TO..."):
+            ranking = score_watchlist(analyzer, watchlist_config, weights, period, selected_window)
+
+        display_ranked_dashboard(ranking, selected_window, outlook_label)
+        st.markdown("---")
     
     # Fetch and display data
     with st.spinner(f"📡 Fetching live data for {symbol}..."):
@@ -523,7 +814,7 @@ def main():
     
     if data is None or data.empty:
         st.error(f"❌ Could not fetch data for {symbol}. Please verify the symbol and try again.")
-        st.info("💡 Try popular symbols like AAPL, MSFT, GOOGL, TSLA, etc.")
+        st.info("💡 Try Canadian symbols like RY.TO, TD.TO, SHOP.TO, SU.TO, or CNQ.TO.")
         return
     
     # Calculate technical indicators
@@ -531,6 +822,7 @@ def main():
         data = analyzer.calculate_technical_indicators(data)
     
     # Main dashboard header
+    st.subheader(f"{symbol} Detail View")
     st.markdown("---")
     
     # Key metrics row

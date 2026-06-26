@@ -1,23 +1,31 @@
-# 🚀 AI-Powered Stock Market Dashboard
+# 🚀 Canadian Stock Signal Intelligence
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.28%2B-red)](https://streamlit.io/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/erikthiart/ai-stock-dashboard)](https://github.com/erikthiart/ai-stock-dashboard)
 
-> **Professional-grade stock analysis with machine learning predictions and real-time technical indicators**
+> **A Canadian stock signal ranking dashboard for short-term watchlist research**
 
-A comprehensive, AI-powered stock market dashboard that combines advanced technical analysis, machine learning price predictions, and intelligent market insights in a beautiful, interactive interface.
+This app ranks a focused Canadian stock watchlist by weekly, biweekly, and short monthly outlook. It combines momentum, volume, RSI, moving-average trend, sector strength, and benchmark-relative strength against `XIC.TO`.
+
+The retained machine learning price prediction and company fundamentals are secondary detail tools for a selected ticker. The core MVP ranking does not depend on exact-price prediction or fundamentals.
 
 ![Main Dashboard](screenshots/main_dashboard.jpg)
 
 ## ✨ Features
 
 ### 🤖 **Artificial Intelligence**
-- **Machine Learning Price Prediction** - Random Forest model with 30+ technical features
+- **Watchlist Signal Ranking** - Canadian stocks ranked by short-term technical strength
+- **Machine Learning Price Prediction** - Retained experimental detail view for selected tickers
 - **AI Market Analysis** - Natural language insights based on technical indicators
 - **Feature Importance Analysis** - Understand what drives price movements
 - **Model Performance Metrics** - Train/test accuracy with confidence levels
+
+### 🇨🇦 **Canadian Signal Engine**
+- **5D, 10D, and 20D Outlooks** - Weekly, biweekly, and short monthly ranking windows
+- **Benchmark Comparison** - Measures relative strength versus `XIC.TO`
+- **Sector Strength** - Compares mapped sector ETFs against the Canadian benchmark
+- **Signal Tiers** - Strong Buy Candidate, Watch Closely, Neutral, Weak, Bearish / Ignore
 
 ### 📈 **Advanced Technical Analysis**
 - **Professional Charts** - Multi-panel candlestick charts with technical overlays
@@ -27,8 +35,8 @@ A comprehensive, AI-powered stock market dashboard that combines advanced techni
 
 ### 🎯 **Real-Time Data**
 - **Live Stock Data** - Real-time prices from Yahoo Finance
-- **Multiple Timeframes** - 1M to 5Y analysis periods
-- **Popular Stock Presets** - Quick access to FAANG+ stocks
+- **Multiple Timeframes** - 6M to 5Y analysis periods
+- **Canadian Watchlist Config** - Edit `config/watchlist.yaml` to change tracked stocks
 - **Custom Symbol Input** - Analyze any publicly traded stock
 
 ### 🎨 **Professional Interface**
@@ -81,27 +89,28 @@ pandas>=1.5.0
 numpy>=1.24.0
 plotly>=5.15.0
 scikit-learn>=1.3.0
+PyYAML>=6.0.0
 ```
 
 ## 🎮 How to Use
 
-### 1. **Select Your Stock**
-- Choose from popular presets (Apple, Tesla, Google, etc.)
-- Or enter any stock symbol manually
-- Select your preferred analysis timeframe
+### 1. **Rank the Canadian Watchlist**
+- Choose an outlook window: 5, 10, or 20 trading days
+- Review the ranked table of Canadian stocks
+- Use the signal tier and explanation as research context
 
-### 2. **Explore the Analysis**
-- **Main Dashboard**: Key metrics and price changes
+### 2. **Open a Stock Detail View**
+- Select a ticker from the configured watchlist
 - **Technical Charts**: Advanced multi-panel analysis
 - **Performance**: Risk metrics and cumulative returns
-- **AI Predictions**: Machine learning price forecasts
+- **ML Prediction**: Retained experimental next-day price forecast
 - **Market Analysis**: AI-generated insights
+- **Company Info**: Fundamentals such as sector, P/E, dividend yield, beta, and 52-week range
 
 ### 3. **Understand the Insights**
-- 🟢 **Green indicators**: Bullish signals
-- 🔴 **Red indicators**: Bearish signals  
-- 🟡 **Yellow indicators**: Neutral/mixed signals
-- ⚠️ **Warning indicators**: Overbought/oversold conditions
+- **Ranking score**: Uses technical and benchmark-relative signals only
+- **Company fundamentals**: Secondary context, not part of the MVP ranking score
+- **ML prediction**: Experimental selected-stock detail, not the core ranking engine
 
 ![Performance Metrics](screenshots/performance_metrics.jpg)
 
