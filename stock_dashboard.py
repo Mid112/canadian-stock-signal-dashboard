@@ -20,9 +20,9 @@ CONFIG_DIR = Path(__file__).parent / "config"
 WATCHLIST_PATH = CONFIG_DIR / "watchlist.yaml"
 WEIGHTS_PATH = CONFIG_DIR / "scoring_weights.yaml"
 OUTLOOK_WINDOWS = {
-    "Weekly (5 trading days)": 5,
-    "Biweekly (10 trading days)": 10,
-    "Short monthly (20 trading days)": 20,
+    "1 Week (5 trading days)": 5,
+    "2 Weeks (10 trading days)": 10,
+    "4 Weeks (20 trading days)": 20,
 }
 
 # Configure Streamlit page
@@ -81,7 +81,7 @@ class StockAnalyzer:
         df['BB_lower'] = df['BB_middle'] - (bb_std * 2)
         
         # Volume indicators
-        df['Volume_SMA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_SMA'] = df['Volume'].rolling(window=30).mean()
         df['Volume_ratio'] = df['Volume'] / df['Volume_SMA']
         
         # Price-based indicators
@@ -745,7 +745,7 @@ def display_ranked_dashboard(ranking, selected_window, window_label):
 # Streamlit App
 def main():
     st.title("🚀 Canadian Stock Signal Intelligence")
-    st.markdown("*Rank TSX watchlist opportunities by short-term signal strength, with technical detail and retained ML price prediction.*")
+    st.markdown("*Rank TSX watchlist opportunities by 1-week, 2-week, and 4-week signal strength, with technical detail and retained ML price prediction.*")
     
     # Sidebar
     st.sidebar.header("📊 Signal Controls")
@@ -842,12 +842,12 @@ def main():
     
     with col2:
         volume = data['Volume'].iloc[-1]
-        avg_volume = data['Volume'].rolling(20).mean().iloc[-1]
+        avg_volume = data['Volume'].rolling(30).mean().iloc[-1]
         volume_change = ((volume - avg_volume) / avg_volume) * 100 if avg_volume > 0 else 0
         st.metric(
             label="📊 Volume",
             value=f"{volume:,.0f}",
-            delta=f"{volume_change:+.1f}% vs 20d avg"
+            delta=f"{volume_change:+.1f}% vs 30d avg"
         )
     
     with col3:

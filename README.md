@@ -6,7 +6,7 @@
 
 > **A Canadian stock signal ranking dashboard for short-term watchlist research**
 
-This app ranks a focused Canadian stock watchlist by weekly, biweekly, and short monthly outlook. It combines momentum, volume, RSI, moving-average trend, sector strength, and benchmark-relative strength against `XIC.TO`.
+This app ranks a focused Canadian stock watchlist by 1-week, 2-week, and 4-week outlook. It combines momentum, 30-day volume surge, RSI, moving-average trend, sector strength, and benchmark-relative strength against `XIC.TO`.
 
 The retained machine learning price prediction and company fundamentals are secondary detail tools for a selected ticker. The core MVP ranking does not depend on exact-price prediction or fundamentals.
 
@@ -22,7 +22,7 @@ The retained machine learning price prediction and company fundamentals are seco
 - **Model Performance Metrics** - Train/test accuracy with confidence levels
 
 ### 🇨🇦 **Canadian Signal Engine**
-- **5D, 10D, and 20D Outlooks** - Weekly, biweekly, and short monthly ranking windows
+- **1W, 2W, and 4W Outlooks** - 5, 10, and 20 trading-day ranking windows
 - **Benchmark Comparison** - Measures relative strength versus `XIC.TO`
 - **Sector Strength** - Compares mapped sector ETFs against the Canadian benchmark
 - **Signal Tiers** - Strong Buy Candidate, Watch Closely, Neutral, Weak, Bearish / Ignore
@@ -95,7 +95,7 @@ PyYAML>=6.0.0
 ## 🎮 How to Use
 
 ### 1. **Rank the Canadian Watchlist**
-- Choose an outlook window: 5, 10, or 20 trading days
+- Choose an outlook window: 1 week, 2 weeks, or 4 weeks
 - Review the ranked table of Canadian stocks
 - Use the signal tier and explanation as research context
 

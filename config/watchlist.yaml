@@ -3,40 +3,100 @@ benchmark: XIC.TO
 sector_etfs:
   Energy: XEG.TO
   Financials: XFN.TO
-  Industrials: XIN.TO
+  Industrials: XGI.TO
   Technology: XIT.TO
+  Consumer Staples: XST.TO
   Utilities: XUT.TO
-  Pipelines: XEI.TO
-  Railways: XIC.TO
+  Materials: XMA.TO
 
 watchlist:
-  - ticker: SU.TO
-    name: Suncor Energy
-    sector: Energy
-  - ticker: CNQ.TO
-    name: Canadian Natural Resources
-    sector: Energy
+  - ticker: SHOP.TO
+    name: Shopify
+    sector: Technology
+  - ticker: CSU.TO
+    name: Constellation Software
+    sector: Technology
+  - ticker: CLS.TO
+    name: Celestica
+    sector: Technology
+  - ticker: DSG.TO
+    name: Descartes Systems Group
+    sector: Technology
+  - ticker: KXS.TO
+    name: Kinaxis
+    sector: Technology
+  - ticker: OTEX.TO
+    name: OpenText
+    sector: Technology
   - ticker: RY.TO
     name: Royal Bank of Canada
     sector: Financials
   - ticker: TD.TO
     name: Toronto-Dominion Bank
     sector: Financials
-  - ticker: SHOP.TO
-    name: Shopify
-    sector: Technology
-  - ticker: CNR.TO
-    name: Canadian National Railway
-    sector: Railways
-  - ticker: ENB.TO
-    name: Enbridge
-    sector: Pipelines
-  - ticker: BNS.TO
-    name: Bank of Nova Scotia
+  - ticker: BN.TO
+    name: Brookfield Corporation
+    sector: Financials
+  - ticker: IFC.TO
+    name: Intact Financial
+    sector: Financials
+  - ticker: NA.TO
+    name: National Bank of Canada
     sector: Financials
   - ticker: BMO.TO
     name: Bank of Montreal
     sector: Financials
+  - ticker: GSY.TO
+    name: goeasy
+    sector: Financials
+  - ticker: FFH.TO
+    name: Fairfax Financial Holdings
+    sector: Financials
+  - ticker: CNR.TO
+    name: Canadian National Railway
+    sector: Industrials
   - ticker: CP.TO
     name: Canadian Pacific Kansas City
-    sector: Railways
+    sector: Industrials
+  - ticker: WSP.TO
+    name: WSP Global
+    sector: Industrials
+  - ticker: TIH.TO
+    name: Toromont Industries
+    sector: Industrials
+  - ticker: STN.TO
+    name: Stantec
+    sector: Industrials
+  - ticker: ATD.TO
+    name: Alimentation Couche-Tard
+    sector: Consumer Staples
+  - ticker: DOL.TO
+    name: Dollarama
+    sector: Consumer Staples
+  - ticker: L.TO
+    name: Loblaw Companies
+    sector: Consumer Staples
+  - ticker: H.TO
+    name: Hydro One
+    sector: Utilities
+  - ticker: FTS.TO
+    name: Fortis
+    sector: Utilities
+  - ticker: WCN.TO
+    name: Waste Connections
+    sector: Industrials
+  - ticker: CNQ.TO
+    name: Canadian Natural Resources
+    sector: Energy
+  - ticker: ENB.TO
+    name: Enbridge
+    sector: Energy
+  - ticker: TRP.TO
+    name: TC Energy
+    sector: Energy
+  - ticker: SU.TO
+    name: Suncor Energy
+    sector: Energy
+  - ticker: AEM.TO
+    name: Agnico Eagle Mines
+    sector: Materials
