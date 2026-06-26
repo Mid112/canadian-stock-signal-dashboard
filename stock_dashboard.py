@@ -527,7 +527,21 @@ def load_scoring_weights():
 @st.cache_data(ttl=900)
 def fetch_history(symbol, period):
     stock = yf.Ticker(symbol)
-    return stock.history(period=period)
+    data = stock.history(period=period)
+    if data is not None and not data.empty:
+        data.index = data.index.tz_localize(None)
+    return data
+
+
+@st.cache_data(ttl=900)
+def fetch_history_range(symbol, start_date, end_date):
+    # Backtests need explicit date ranges rather than Streamlit's current
+    # dashboard period presets so historical signal dates are reproducible.
+    stock = yf.Ticker(symbol)
+    data = stock.history(start=start_date, end=end_date)
+    if data is not None and not data.empty:
+        data.index = data.index.tz_localize(None)
+    return data
 
 
 def clip_score(value):
@@ -549,6 +563,38 @@ def calculate_return(data, window):
     if previous_close == 0 or pd.isna(previous_close):
         return np.nan
     return (data["Close"].iloc[-1] - previous_close) / previous_close
+
+
+def calculate_return_at(data, position, window):
+    # Historical momentum at a signal date uses only prices up to that date.
+    if data is None or position < window or position >= len(data):
+        return np.nan
+    previous_close = data["Close"].iloc[position - window]
+    current_close = data["Close"].iloc[position]
+    if previous_close == 0 or pd.isna(previous_close):
+        return np.nan
+    return (current_close - previous_close) / previous_close
+
+
+def calculate_forward_return(data, position, window):
+    # Forward return is the "what happened next" check used only after the
+    # signal score has already been calculated.
+    if data is None or position < 0 or position + window >= len(data):
+        return np.nan
+    current_close = data["Close"].iloc[position]
+    future_close = data["Close"].iloc[position + window]
+    if current_close == 0 or pd.isna(current_close):
+        return np.nan
+    return (future_close - current_close) / current_close
+
+
+def get_position_on_or_before(data, timestamp):
+    # Align stocks, sector ETFs, and benchmark to the latest available trading
+    # day on or before the signal date, handling holidays and missing sessions.
+    if data is None or data.empty:
+        return None
+    position = data.index.searchsorted(timestamp, side="right") - 1
+    return int(position) if position >= 0 else None
 
 
 def calculate_rsi_score(rsi):
@@ -597,6 +643,19 @@ def calculate_signal_tier(score):
     if score >= 20:
         return "Weak"
     return "Bearish / Ignore"
+
+
+def calculate_weighted_signal_score(weights, momentum, trend, volume, rsi, sector_strength, benchmark_relative):
+    # Shared score formula keeps the live ranking and backtest ranking aligned.
+    raw_score = (
+        weights["momentum"] * normalize_return(momentum)
+        + weights["trend"] * trend
+        + weights["volume"] * volume
+        + weights["rsi"] * rsi
+        + weights["sector_strength"] * normalize_return(sector_strength, 0.05)
+        + weights["benchmark_relative"] * normalize_return(benchmark_relative, 0.05)
+    )
+    return round((raw_score + 1) * 50, 1)
 
 
 def generate_signal_explanation(row, window_label):
@@ -676,15 +735,10 @@ def score_watchlist(analyzer, watchlist_config, weights, period, selected_window
 
             # Quantitative inputs decide the ranking. Fundamentals and ML
             # prediction stay in the detail view as context, not score drivers.
-            raw_score = (
-                weights["momentum"] * normalize_return(stock_return)
-                + weights["trend"] * trend_score
-                + weights["volume"] * volume_score
-                + weights["rsi"] * rsi_score
-                + weights["sector_strength"] * normalize_return(sector_strength, 0.05)
-                + weights["benchmark_relative"] * normalize_return(benchmark_relative, 0.05)
+            final_score = calculate_weighted_signal_score(
+                weights, stock_return, trend_score, volume_score,
+                rsi_score, sector_strength, benchmark_relative
             )
-            final_score = round((raw_score + 1) * 50, 1)
             prefix = f"{window}D"
             row[f"{prefix} Momentum"] = stock_return
             row[f"{prefix} Score"] = final_score
@@ -706,6 +760,149 @@ def score_watchlist(analyzer, watchlist_config, weights, period, selected_window
     ranking = ranking.sort_values("Selected Score", ascending=False).reset_index(drop=True)
     ranking.insert(0, "Rank", ranking.index + 1)
     return ranking
+
+
+def load_backtest_histories(analyzer, watchlist_config, start_date, end_date, warmup_days=320):
+    benchmark = watchlist_config.get("benchmark", "XIC.TO")
+    sector_etfs = watchlist_config.get("sector_etfs", {})
+    watchlist = watchlist_config.get("watchlist", [])
+    padded_start = start_date - timedelta(days=warmup_days)
+
+    # Include warmup history before the visible backtest window so long moving
+    # averages and RSI exist on the first signal date.
+    needed_symbols = {benchmark}
+    needed_symbols.update(item["ticker"] for item in watchlist)
+    needed_symbols.update(sector_etfs.get(item.get("sector")) for item in watchlist if sector_etfs.get(item.get("sector")))
+
+    histories = {}
+    for symbol in sorted(needed_symbols):
+        try:
+            data = fetch_history_range(symbol, padded_start, end_date + timedelta(days=10))
+            if data is not None and not data.empty:
+                histories[symbol] = analyzer.calculate_technical_indicators(data)
+        except Exception:
+            histories[symbol] = pd.DataFrame()
+    return histories
+
+
+def calculate_historical_signal(item, histories, watchlist_config, weights, signal_date, window):
+    benchmark = watchlist_config.get("benchmark", "XIC.TO")
+    sector_etfs = watchlist_config.get("sector_etfs", {})
+    ticker = item["ticker"]
+    data = histories.get(ticker)
+    benchmark_data = histories.get(benchmark)
+
+    stock_pos = get_position_on_or_before(data, signal_date)
+    benchmark_pos = get_position_on_or_before(benchmark_data, signal_date)
+    if stock_pos is None or benchmark_pos is None or stock_pos < 200:
+        return None
+
+    sector = item.get("sector", "Unknown")
+    sector_symbol = sector_etfs.get(sector, benchmark)
+    sector_data = histories.get(sector_symbol)
+    sector_pos = get_position_on_or_before(sector_data, signal_date)
+    latest = data.iloc[stock_pos]
+
+    # Score components mirror the live ranking, but every value is read at the
+    # historical signal date instead of the latest row.
+    stock_return = calculate_return_at(data, stock_pos, window)
+    benchmark_return = calculate_return_at(benchmark_data, benchmark_pos, window)
+    sector_return = calculate_return_at(sector_data, sector_pos, window) if sector_pos is not None else np.nan
+    benchmark_relative = stock_return - benchmark_return if pd.notna(benchmark_return) else 0
+    sector_strength = sector_return - benchmark_return if pd.notna(sector_return) and pd.notna(benchmark_return) else 0
+    volume_score = clip_score((latest.get("Volume_ratio", 1) - 1) / 2)
+    rsi_score = calculate_rsi_score(latest.get("RSI", np.nan))
+    trend_score = calculate_trend_score(latest)
+    final_score = calculate_weighted_signal_score(
+        weights, stock_return, trend_score, volume_score,
+        rsi_score, sector_strength, benchmark_relative
+    )
+
+    forward_return = calculate_forward_return(data, stock_pos, window)
+    benchmark_forward_return = calculate_forward_return(benchmark_data, benchmark_pos, window)
+    if pd.isna(forward_return) or pd.isna(benchmark_forward_return):
+        return None
+
+    return {
+        "Date": data.index[stock_pos].date(),
+        "Ticker": ticker,
+        "Company": item.get("name", ticker),
+        "Sector": sector,
+        "Score": final_score,
+        "Signal Tier": calculate_signal_tier(final_score),
+        "Price": latest["Close"],
+        "Momentum": stock_return,
+        "RSI": latest.get("RSI", np.nan),
+        "Volume Ratio": latest.get("Volume_ratio", np.nan),
+        "MA Trend Score": trend_score,
+        "Sector Strength": sector_strength,
+        "Benchmark Relative Strength": benchmark_relative,
+        "Forward Return": forward_return,
+        "Benchmark Forward Return": benchmark_forward_return,
+        "Excess Return": forward_return - benchmark_forward_return,
+        "Beat Benchmark": forward_return > benchmark_forward_return,
+    }
+
+
+def run_signal_backtest(analyzer, watchlist_config, weights, start_date, end_date, window, minimum_score):
+    histories = load_backtest_histories(analyzer, watchlist_config, start_date, end_date)
+    benchmark = watchlist_config.get("benchmark", "XIC.TO")
+    benchmark_data = histories.get(benchmark)
+    if benchmark_data is None or benchmark_data.empty:
+        return pd.DataFrame()
+
+    # Use benchmark trading dates as the backtest calendar so every signal date
+    # has a market reference point.
+    signal_dates = benchmark_data.loc[
+        (benchmark_data.index.date >= start_date)
+        & (benchmark_data.index.date <= end_date)
+    ].index
+
+    rows = []
+    for signal_date in signal_dates:
+        for item in watchlist_config.get("watchlist", []):
+            row = calculate_historical_signal(item, histories, watchlist_config, weights, signal_date, window)
+            if row and row["Score"] >= minimum_score:
+                rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def display_backtest_results(results):
+    if results.empty:
+        st.warning("No historical signals matched the selected backtest settings.")
+        return
+
+    signal_count = len(results)
+    avg_return = results["Forward Return"].mean()
+    avg_benchmark_return = results["Benchmark Forward Return"].mean()
+    avg_excess_return = results["Excess Return"].mean()
+    outperformance_rate = results["Beat Benchmark"].mean()
+    win_rate = (results["Forward Return"] > 0).mean()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Signals", f"{signal_count:,}")
+    col2.metric("Win Rate", f"{win_rate:.1%}")
+    col3.metric("Outperform Rate", f"{outperformance_rate:.1%}")
+    col4.metric("Avg Return", f"{avg_return:+.2%}")
+    col5.metric("Avg Excess", f"{avg_excess_return:+.2%}", delta=f"Benchmark {avg_benchmark_return:+.2%}")
+
+    display = results.sort_values(["Date", "Score"], ascending=[False, False]).copy()
+    percent_columns = ["Momentum", "Sector Strength", "Benchmark Relative Strength", "Forward Return", "Benchmark Forward Return", "Excess Return"]
+    for column in percent_columns:
+        display[column] = display[column].map(lambda value: f"{value:+.2%}" if pd.notna(value) else "N/A")
+    display["RSI"] = display["RSI"].map(lambda value: f"{value:.1f}" if pd.notna(value) else "N/A")
+    display["Volume Ratio"] = display["Volume Ratio"].map(lambda value: f"{value:.2f}x" if pd.notna(value) else "N/A")
+    display["Score"] = display["Score"].map(lambda value: f"{value:.1f}")
+    display["Price"] = display["Price"].map(lambda value: f"${value:.2f}")
+
+    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.download_button(
+        label="📥 Download Backtest Signals",
+        data=results.to_csv(index=False),
+        file_name="tsx_signal_backtest.csv",
+        mime="text/csv",
+    )
 
 
 def display_ranked_dashboard(ranking, selected_window, window_label):
@@ -785,6 +982,7 @@ def main():
     # Analysis options
     st.sidebar.subheader("🔧 Analysis Options")
     show_ranking = st.sidebar.checkbox("🏆 Watchlist Ranking", value=True)
+    show_backtest = st.sidebar.checkbox("🧪 Backtest Signals", value=False)
     show_technical = st.sidebar.checkbox("📈 Technical Charts", value=True)
     show_performance = st.sidebar.checkbox("📊 Performance Metrics", value=True)
     show_analysis = st.sidebar.checkbox("🧠 AI Market Analysis", value=True)
@@ -806,6 +1004,37 @@ def main():
             ranking = score_watchlist(analyzer, watchlist_config, weights, period, selected_window)
 
         display_ranked_dashboard(ranking, selected_window, outlook_label)
+        st.markdown("---")
+
+    if show_backtest:
+        st.subheader("🧪 Historical Signal Backtest")
+        st.caption("Backtest checks whether stocks above a score threshold beat XIC.TO after the selected holding window. Scores use only data available on each signal date.")
+
+        bt_col1, bt_col2, bt_col3, bt_col4 = st.columns(4)
+        with bt_col1:
+            backtest_start = st.date_input("Start Date", value=datetime.today().date() - timedelta(days=365))
+        with bt_col2:
+            backtest_end = st.date_input("End Date", value=datetime.today().date() - timedelta(days=30))
+        with bt_col3:
+            backtest_window_label = st.selectbox("Holding Window", options=list(OUTLOOK_WINDOWS.keys()), index=1)
+            backtest_window = OUTLOOK_WINDOWS[backtest_window_label]
+        with bt_col4:
+            minimum_score = st.slider("Minimum Score", min_value=0, max_value=100, value=60, step=5)
+
+        if backtest_start >= backtest_end:
+            st.warning("Backtest start date must be before end date.")
+        elif st.button("Run Backtest", type="primary"):
+            with st.spinner("Running historical signal backtest..."):
+                backtest_results = run_signal_backtest(
+                    analyzer,
+                    watchlist_config,
+                    weights,
+                    backtest_start,
+                    backtest_end,
+                    backtest_window,
+                    minimum_score,
+                )
+            display_backtest_results(backtest_results)
         st.markdown("---")
     
     # Fetch and display data

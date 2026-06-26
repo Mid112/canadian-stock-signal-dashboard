@@ -26,6 +26,7 @@ The retained machine learning price prediction and company fundamentals are seco
 - **Benchmark Comparison** - Measures relative strength versus `XIC.TO`
 - **Sector Strength** - Compares mapped sector ETFs against the Canadian benchmark
 - **Signal Tiers** - Strong Buy Candidate, Watch Closely, Neutral, Weak, Bearish / Ignore
+- **Historical Backtesting** - Tests whether high-scoring signals beat `XIC.TO` after the selected holding window
 
 ### 📈 **Advanced Technical Analysis**
 - **Professional Charts** - Multi-panel candlestick charts with technical overlays
@@ -106,6 +107,7 @@ PyYAML>=6.0.0
 - **ML Prediction**: Retained experimental next-day price forecast
 - **Market Analysis**: AI-generated insights
 - **Company Info**: Fundamentals such as sector, P/E, dividend yield, beta, and 52-week range
+- **Backtest Signals**: Select dates, score threshold, and holding window to test historical outperformance
 
 ### 3. **Understand the Insights**
 - **Ranking score**: Uses technical and benchmark-relative signals only
