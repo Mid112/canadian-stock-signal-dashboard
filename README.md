@@ -117,7 +117,7 @@ PyYAML>=6.0.0
 - **Backtest Signals**: Select dates, score threshold, and holding window to test historical outperformance
 
 ### 3. **Use Paper Trading**
-- Start with `$100,000` virtual cash
+- Start with `$10,000` virtual cash
 - Place simple market buy or sell orders for whole shares
 - Review the portfolio tab for cash, positions, average cost, market value, unrealized P/L, realized P/L, and account value
 - Review transaction history for each filled or rejected order
@@ -137,7 +137,7 @@ The simulator is intentionally small enough to live inside this Streamlit dashbo
 
 - Single user only, with no login or hosted accounts
 - Local SQLite storage at `data/paper_trading.db`
-- `$100,000` starting virtual cash
+- `$10,000` starting virtual cash
 - Market buy and sell orders only
 - Whole-share long positions only
 - No limit orders, stop orders, margin, shorting, FX, commissions, slippage, partial fills, or market-hours checks
