@@ -67,6 +67,9 @@ watchlist:
   - ticker: STN.TO
     name: Stantec
     sector: Industrials
+  - ticker: AC.TO
+    name: Air Canada
+    sector: Industrials
   - ticker: ATD.TO
     name: Alimentation Couche-Tard
     sector: Consumer Staples

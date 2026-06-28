@@ -27,6 +27,7 @@ The retained machine learning price prediction and company fundamentals are seco
 - **Sector Strength** - Compares mapped sector ETFs against the Canadian benchmark
 - **Signal Tiers** - Strong Buy Candidate, Watch Closely, Neutral, Weak, Bearish / Ignore
 - **Historical Backtesting** - Tests whether high-scoring signals beat `XIC.TO` after the selected holding window
+- **Paper Trading Simulator** - Single-user virtual portfolio with market buy/sell orders and local transaction history
 
 ### 📈 **Advanced Technical Analysis**
 - **Professional Charts** - Multi-panel candlestick charts with technical overlays
@@ -35,7 +36,7 @@ The retained machine learning price prediction and company fundamentals are seco
 - **Performance Metrics** - Sharpe ratio, volatility, maximum drawdown
 
 ### 🎯 **Real-Time Data**
-- **Live Stock Data** - Real-time prices from Yahoo Finance
+- **Latest Available Stock Data** - Yahoo Finance data through `yfinance`, usually delayed rather than a paid real-time exchange feed
 - **Multiple Timeframes** - 6M to 5Y analysis periods
 - **Canadian Watchlist Config** - Edit `config/watchlist.yaml` to change tracked stocks
 - **Custom Symbol Input** - Analyze any publicly traded stock
@@ -64,17 +65,23 @@ git clone https://github.com/erikthiart/ai-stock-dashboard.git
 cd ai-stock-dashboard
 ```
 
-2. **Install dependencies**
+2. **Create and activate a virtual environment**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+3. **Install dependencies**
 ```bash
 pip install -r requirements.txt
 ```
 
-3. **Run the application**
+4. **Run the application**
 ```bash
 streamlit run stock_dashboard.py
 ```
 
-4. **Open your browser**
+5. **Open your browser**
 ```
 Navigate to http://localhost:8501
 ```
@@ -109,12 +116,43 @@ PyYAML>=6.0.0
 - **Company Info**: Fundamentals such as sector, P/E, dividend yield, beta, and 52-week range
 - **Backtest Signals**: Select dates, score threshold, and holding window to test historical outperformance
 
-### 3. **Understand the Insights**
+### 3. **Use Paper Trading**
+- Start with `$100,000` virtual cash
+- Place simple market buy or sell orders for whole shares
+- Review the portfolio tab for cash, positions, average cost, market value, unrealized P/L, realized P/L, and account value
+- Review transaction history for each filled or rejected order
+- Reset the local paper account when you want a fresh practice portfolio
+
+### 4. **Understand the Insights**
 - **Ranking score**: Uses technical and benchmark-relative signals only
 - **Company fundamentals**: Secondary context, not part of the MVP ranking score
 - **ML prediction**: Experimental selected-stock detail, not the core ranking engine
+- **Paper trading fills**: Educational simulation only; fills use the latest available `yfinance` price, not a real broker quote or live order book
 
 ![Performance Metrics](screenshots/performance_metrics.jpg)
+
+## 💼 Paper Trading Scope
+
+The simulator is intentionally small enough to live inside this Streamlit dashboard:
+
+- Single user only, with no login or hosted accounts
+- Local SQLite storage at `data/paper_trading.db`
+- `$100,000` starting virtual cash
+- Market buy and sell orders only
+- Whole-share long positions only
+- No limit orders, stop orders, margin, shorting, FX, commissions, slippage, partial fills, or market-hours checks
+
+### Expected Data Delay
+
+The app uses Yahoo Finance data through `yfinance`, not a paid exchange feed. Expect prices to be delayed, commonly around 15-20 minutes where intraday prices are available. When markets are closed, or when Yahoo only returns daily candles for a symbol, paper trades may fill at the most recent daily close.
+
+### Portfolio Tab Components
+
+The portfolio view tracks virtual cash, positions value, total account value, total return, realized P/L, ticker, quantity, average cost, latest available price, cost basis, market value, unrealized P/L, unrealized return percentage, and price timestamp.
+
+### Transaction Details Stored
+
+Each paper order records timestamp, ticker, buy/sell side, quantity, fill price, gross amount, realized P/L for sells, cash balance after the order, status, rejection reason when applicable, and price source.
 
 ## 🧠 Machine Learning Model
 

@@ -1,3 +1,5 @@
+import sqlite3
+import uuid
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -19,6 +21,11 @@ warnings.filterwarnings('ignore')
 CONFIG_DIR = Path(__file__).parent / "config"
 WATCHLIST_PATH = CONFIG_DIR / "watchlist.yaml"
 WEIGHTS_PATH = CONFIG_DIR / "scoring_weights.yaml"
+# Paper trading is local-only state. Keeping it under data/ makes it easy to
+# ignore in git and avoids introducing a full backend for the single-user MVP.
+DATA_DIR = Path(__file__).parent / "data"
+PAPER_TRADING_DB_PATH = DATA_DIR / "paper_trading.db"
+STARTING_PAPER_CASH = 100000.0
 OUTLOOK_WINDOWS = {
     "1 Week (5 trading days)": 5,
     "2 Weeks (10 trading days)": 10,
@@ -478,7 +485,7 @@ def create_performance_metrics(data, symbol):
         height=400
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def load_yaml_config(path, fallback):
@@ -542,6 +549,383 @@ def fetch_history_range(symbol, start_date, end_date):
     if data is not None and not data.empty:
         data.index = data.index.tz_localize(None)
     return data
+
+
+def get_paper_trading_connection():
+    """Open the local SQLite store used by the paper trading simulator."""
+    DATA_DIR.mkdir(exist_ok=True)
+    connection = sqlite3.connect(PAPER_TRADING_DB_PATH)
+    # Row objects allow column-name access while still behaving like tuples.
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def initialize_paper_trading_store():
+    """Create the simulator tables and seed the single practice account."""
+    with get_paper_trading_connection() as connection:
+        # The account table is deliberately constrained to one row because this
+        # Streamlit app has no login or multi-user identity layer.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                starting_cash REAL NOT NULL,
+                cash_balance REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # Positions stores the current open long position per symbol. Average
+        # cost is updated on buys and used later to calculate sell P/L.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS positions (
+                symbol TEXT PRIMARY KEY,
+                quantity INTEGER NOT NULL,
+                average_cost REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # Transactions is the audit trail. Filled and rejected orders are both
+        # recorded so the user can see failed risk checks such as insufficient
+        # cash or insufficient shares.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transactions (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                price REAL,
+                gross_amount REAL,
+                realized_pl REAL NOT NULL DEFAULT 0,
+                cash_balance_after REAL,
+                status TEXT NOT NULL,
+                reason TEXT,
+                price_source TEXT
+            )
+            """
+        )
+
+        account = connection.execute("SELECT id FROM account WHERE id = 1").fetchone()
+        if account is None:
+            # First run starts with the configured virtual cash balance.
+            now = datetime.now().isoformat(timespec="seconds")
+            connection.execute(
+                """
+                INSERT INTO account (id, starting_cash, cash_balance, created_at, updated_at)
+                VALUES (1, ?, ?, ?, ?)
+                """,
+                (STARTING_PAPER_CASH, STARTING_PAPER_CASH, now, now),
+            )
+
+
+def reset_paper_trading_account():
+    """Clear all simulated trading activity and restore starting cash."""
+    initialize_paper_trading_store()
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_paper_trading_connection() as connection:
+        connection.execute("DELETE FROM positions")
+        connection.execute("DELETE FROM transactions")
+        connection.execute(
+            """
+            UPDATE account
+            SET starting_cash = ?, cash_balance = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (STARTING_PAPER_CASH, STARTING_PAPER_CASH, now),
+        )
+
+
+def get_paper_account():
+    """Return the single paper account row as a plain dictionary."""
+    initialize_paper_trading_store()
+    with get_paper_trading_connection() as connection:
+        return dict(connection.execute("SELECT * FROM account WHERE id = 1").fetchone())
+
+
+def get_paper_positions():
+    """Return all open positions sorted by ticker symbol."""
+    initialize_paper_trading_store()
+    with get_paper_trading_connection() as connection:
+        rows = connection.execute("SELECT * FROM positions ORDER BY symbol").fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_paper_transactions(limit=250):
+    """Return the most recent paper orders as a DataFrame for display/export."""
+    initialize_paper_trading_store()
+    with get_paper_trading_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM transactions
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return pd.DataFrame([dict(row) for row in rows])
+
+
+def record_paper_transaction(connection, symbol, side, quantity, price, gross_amount, realized_pl, cash_balance_after, status, reason, price_source):
+    """Insert one filled or rejected paper order into the audit trail."""
+    connection.execute(
+        """
+        INSERT INTO transactions (
+            id, timestamp, symbol, side, quantity, price, gross_amount,
+            realized_pl, cash_balance_after, status, reason, price_source
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()),
+            datetime.now().isoformat(timespec="seconds"),
+            symbol,
+            side,
+            int(quantity),
+            price,
+            gross_amount,
+            realized_pl,
+            cash_balance_after,
+            status,
+            reason,
+            price_source,
+        ),
+    )
+
+
+def get_latest_market_price(symbol):
+    """Fetch the latest available close used as the simulator fill price."""
+    data = fetch_history(symbol, "5d")
+    if data is None or data.empty:
+        return None
+
+    # yfinance can occasionally return sparse data. Only rows with a real close
+    # are eligible for simulated fills.
+    clean_data = data.dropna(subset=["Close"])
+    if clean_data.empty:
+        return None
+
+    latest = clean_data.iloc[-1]
+    price = float(latest["Close"])
+    timestamp = latest.name
+    timestamp_label = timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(timestamp, "strftime") else str(timestamp)
+    return {
+        "price": price,
+        "timestamp": timestamp_label,
+        "source": "Yahoo Finance latest available close via yfinance",
+    }
+
+
+def execute_paper_trade(symbol, side, quantity):
+    """Validate and fill a simple market buy/sell order for the practice account."""
+    initialize_paper_trading_store()
+    symbol = symbol.strip().upper()
+    side = side.upper()
+    quantity = int(quantity)
+
+    if not symbol:
+        return {"ok": False, "message": "Ticker symbol is required."}
+    if side not in {"BUY", "SELL"}:
+        return {"ok": False, "message": "Side must be BUY or SELL."}
+    if quantity <= 0:
+        return {"ok": False, "message": "Quantity must be at least 1 share."}
+
+    # This MVP has no live order book or execution engine. A market order fills
+    # at the latest price yfinance returns, which may be delayed or a daily close.
+    price_info = get_latest_market_price(symbol)
+    price = price_info["price"] if price_info else None
+    price_source = price_info["source"] if price_info else "Price unavailable"
+
+    with get_paper_trading_connection() as connection:
+        account = connection.execute("SELECT * FROM account WHERE id = 1").fetchone()
+        cash_balance = float(account["cash_balance"])
+
+        def reject(reason):
+            # Rejected orders are stored too, which makes risk-rule behavior
+            # visible in the transaction history instead of disappearing.
+            record_paper_transaction(
+                connection,
+                symbol,
+                side,
+                quantity,
+                price,
+                None if price is None else price * quantity,
+                0,
+                cash_balance,
+                "Rejected",
+                reason,
+                price_source,
+            )
+            return {"ok": False, "message": reason}
+
+        if price is None or price <= 0:
+            return reject("Latest market price was unavailable.")
+
+        position = connection.execute("SELECT * FROM positions WHERE symbol = ?", (symbol,)).fetchone()
+        gross_amount = price * quantity
+        realized_pl = 0.0
+        now = datetime.now().isoformat(timespec="seconds")
+
+        if side == "BUY":
+            # No margin in this MVP: virtual cash must fully cover the purchase.
+            if gross_amount > cash_balance:
+                return reject("Insufficient virtual cash for this buy order.")
+
+            if position:
+                # Weighted-average cost keeps one clean position row per symbol.
+                old_quantity = int(position["quantity"])
+                old_average_cost = float(position["average_cost"])
+                new_quantity = old_quantity + quantity
+                new_average_cost = ((old_quantity * old_average_cost) + gross_amount) / new_quantity
+                connection.execute(
+                    """
+                    UPDATE positions
+                    SET quantity = ?, average_cost = ?, updated_at = ?
+                    WHERE symbol = ?
+                    """,
+                    (new_quantity, new_average_cost, now, symbol),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO positions (symbol, quantity, average_cost, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (symbol, quantity, price, now),
+                )
+
+            cash_balance -= gross_amount
+
+        else:
+            # No short selling in this MVP: sells cannot exceed owned shares.
+            if position is None or int(position["quantity"]) < quantity:
+                return reject("Insufficient shares for this sell order.")
+
+            old_quantity = int(position["quantity"])
+            average_cost = float(position["average_cost"])
+            # Realized P/L is recognized only when shares are sold.
+            realized_pl = (price - average_cost) * quantity
+            remaining_quantity = old_quantity - quantity
+
+            if remaining_quantity == 0:
+                connection.execute("DELETE FROM positions WHERE symbol = ?", (symbol,))
+            else:
+                connection.execute(
+                    """
+                    UPDATE positions
+                    SET quantity = ?, updated_at = ?
+                    WHERE symbol = ?
+                    """,
+                    (remaining_quantity, now, symbol),
+                )
+
+            cash_balance += gross_amount
+
+        # Commit the cash/position changes and then record the fill with the
+        # resulting cash balance so history can reconstruct account movement.
+        connection.execute(
+            """
+            UPDATE account
+            SET cash_balance = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (cash_balance, now),
+        )
+        record_paper_transaction(
+            connection,
+            symbol,
+            side,
+            quantity,
+            price,
+            gross_amount,
+            realized_pl,
+            cash_balance,
+            "Filled",
+            "Filled at the latest available market price.",
+            price_source,
+        )
+
+    return {
+        "ok": True,
+        "message": f"{side.title()} order filled: {quantity} {symbol} @ ${price:.2f}.",
+    }
+
+
+def build_paper_portfolio_snapshot():
+    """Combine account, positions, latest prices, and history into UI metrics."""
+    account = get_paper_account()
+    positions = get_paper_positions()
+    rows = []
+
+    for position in positions:
+        symbol = position["symbol"]
+        quantity = int(position["quantity"])
+        average_cost = float(position["average_cost"])
+        price_info = get_latest_market_price(symbol)
+        last_price = price_info["price"] if price_info else np.nan
+        # Open-position values are marked to the latest available delayed price.
+        market_value = last_price * quantity if pd.notna(last_price) else np.nan
+        cost_basis = average_cost * quantity
+        unrealized_pl = market_value - cost_basis if pd.notna(market_value) else np.nan
+        unrealized_pct = unrealized_pl / cost_basis if cost_basis else np.nan
+
+        rows.append(
+            {
+                "Symbol": symbol,
+                "Quantity": quantity,
+                "Average Cost": average_cost,
+                "Last Price": last_price,
+                "Cost Basis": cost_basis,
+                "Market Value": market_value,
+                "Unrealized P/L": unrealized_pl,
+                "Unrealized %": unrealized_pct,
+                "Price Time": price_info["timestamp"] if price_info else "N/A",
+            }
+        )
+
+    positions_df = pd.DataFrame(rows)
+    positions_value = positions_df["Market Value"].sum() if not positions_df.empty else 0.0
+    transactions = get_paper_transactions()
+    realized_pl = 0.0
+    if not transactions.empty and "realized_pl" in transactions:
+        # Only filled sells carry non-zero realized P/L, but filtering filled
+        # rows protects the total if rejected rows ever include diagnostic values.
+        realized_pl = float(transactions.loc[transactions["status"] == "Filled", "realized_pl"].sum())
+
+    account_value = float(account["cash_balance"]) + positions_value
+    return {
+        "account": account,
+        "positions": positions_df,
+        "transactions": transactions,
+        "positions_value": positions_value,
+        "account_value": account_value,
+        "realized_pl": realized_pl,
+        "total_return": account_value - float(account["starting_cash"]),
+    }
+
+
+def format_money(value):
+    if pd.isna(value):
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def format_signed_money(value):
+    if pd.isna(value):
+        return "N/A"
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.2f}"
+
+
+def format_percent(value):
+    if pd.isna(value):
+        return "N/A"
+    return f"{value:+.2%}"
 
 
 def clip_score(value):
@@ -896,7 +1280,7 @@ def display_backtest_results(results):
     display["Score"] = display["Score"].map(lambda value: f"{value:.1f}")
     display["Price"] = display["Price"].map(lambda value: f"${value:.2f}")
 
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width="stretch", hide_index=True)
     st.download_button(
         label="📥 Download Backtest Signals",
         data=results.to_csv(index=False),
@@ -931,13 +1315,164 @@ def display_ranked_dashboard(ranking, selected_window, window_label):
     formatted["Volume Ratio"] = formatted["Volume Ratio"].map(lambda value: f"{value:.2f}x" if pd.notna(value) else "N/A")
     formatted["Selected Score"] = formatted["Selected Score"].map(lambda value: f"{value:.1f}")
 
-    st.dataframe(formatted, use_container_width=True, hide_index=True)
+    st.dataframe(formatted, width="stretch", hide_index=True)
 
     top_rows = ranking.head(3).copy()
     if not top_rows.empty:
         st.write("### Top Signal Notes")
         for _, row in top_rows.iterrows():
             st.info(generate_signal_explanation(row, window_label))
+
+
+def render_paper_trading_simulator(current_symbol, watchlist):
+    """Render the single-user paper trading workflow inside the dashboard."""
+    initialize_paper_trading_store()
+    st.subheader("Paper Trading Simulator")
+    st.caption(
+        "Single-user practice account. Orders fill immediately at the latest available Yahoo Finance price "
+        "from yfinance, so this is delayed paper trading rather than a real-time brokerage simulator."
+    )
+    # Trade submissions trigger st.rerun() so the account metrics refresh. This
+    # session-state bridge preserves the success/error message after the rerun.
+    trade_message = st.session_state.pop("paper_trade_message", None)
+    if trade_message:
+        message_type, message = trade_message
+        if message_type == "success":
+            st.success(message)
+        else:
+            st.error(message)
+
+    snapshot = build_paper_portfolio_snapshot()
+    account = snapshot["account"]
+
+    summary_cols = st.columns(5)
+    summary_cols[0].metric("Virtual Cash", format_money(account["cash_balance"]))
+    summary_cols[1].metric("Positions Value", format_money(snapshot["positions_value"]))
+    summary_cols[2].metric("Account Value", format_money(snapshot["account_value"]))
+    summary_cols[3].metric("Total Return", format_signed_money(snapshot["total_return"]))
+    summary_cols[4].metric("Realized P/L", format_signed_money(snapshot["realized_pl"]))
+
+    trade_tab, portfolio_tab, history_tab, scope_tab = st.tabs(["Trade", "Portfolio", "Transactions", "Scope"])
+
+    with trade_tab:
+        # Offer the current research ticker first, then the configured watchlist,
+        # while still allowing any custom Yahoo Finance symbol.
+        watchlist_symbols = [item.get("ticker") for item in watchlist if item.get("ticker")]
+        symbol_options = list(dict.fromkeys([current_symbol] + watchlist_symbols + ["Custom"]))
+
+        with st.form("paper_trade_form"):
+            trade_col1, trade_col2, trade_col3 = st.columns([2, 1, 1])
+            with trade_col1:
+                selected_trade_symbol = st.selectbox("Ticker", options=symbol_options)
+                if selected_trade_symbol == "Custom":
+                    trade_symbol = st.text_input("Custom ticker", value=current_symbol, max_chars=12).upper()
+                else:
+                    trade_symbol = selected_trade_symbol
+            with trade_col2:
+                side = st.radio("Side", options=["BUY", "SELL"], horizontal=True)
+            with trade_col3:
+                quantity = st.number_input("Shares", min_value=1, value=1, step=1)
+
+            submitted = st.form_submit_button("Place Market Order", type="primary")
+
+        if submitted:
+            result = execute_paper_trade(trade_symbol, side, quantity)
+            st.session_state["paper_trade_message"] = ("success" if result["ok"] else "error", result["message"])
+            st.rerun()
+
+        # Show the reference price separately from the order form so the user can
+        # see that fills are based on delayed latest-available market data.
+        price_info = get_latest_market_price(current_symbol)
+        if price_info:
+            st.info(
+                f"Current selected ticker reference: {current_symbol} latest available price "
+                f"{format_money(price_info['price'])}, timestamp {price_info['timestamp']}."
+            )
+        st.write(
+            "Orders supported here: market buy and market sell only. No limit orders, stop orders, "
+            "short selling, margin, commissions, FX conversion, slippage, partial fills, or market-hours checks."
+        )
+
+    with portfolio_tab:
+        # The portfolio view is derived from positions plus latest prices rather
+        # than persisted as a separate snapshot, keeping account state minimal.
+        positions_df = snapshot["positions"]
+        if positions_df.empty:
+            st.info("No open positions yet. Place a paper buy order to start tracking a portfolio.")
+        else:
+            display_positions = positions_df.copy()
+            money_columns = ["Average Cost", "Last Price", "Cost Basis", "Market Value", "Unrealized P/L"]
+            for column in money_columns:
+                display_positions[column] = display_positions[column].map(format_money)
+            display_positions["Unrealized %"] = display_positions["Unrealized %"].map(format_percent)
+            st.dataframe(display_positions, width="stretch", hide_index=True)
+
+        # Reset is intentionally gated with a checkbox because it deletes the
+        # local simulator history, even though it does not touch source files.
+        reset_confirmed = st.checkbox("I understand this will clear all paper positions and transactions.")
+        if st.button("Reset Paper Account", disabled=not reset_confirmed):
+            reset_paper_trading_account()
+            st.success("Paper account reset to $100,000 virtual cash.")
+            st.rerun()
+
+    with history_tab:
+        # Transaction history includes both fills and rejections so users can
+        # audit why an attempted paper order did or did not execute.
+        transactions = snapshot["transactions"]
+        if transactions.empty:
+            st.info("No transactions yet.")
+        else:
+            display_transactions = transactions.copy()
+            for column in ["price", "gross_amount", "realized_pl", "cash_balance_after"]:
+                display_transactions[column] = display_transactions[column].map(format_money)
+            display_transactions = display_transactions[
+                [
+                    "timestamp",
+                    "symbol",
+                    "side",
+                    "quantity",
+                    "price",
+                    "gross_amount",
+                    "realized_pl",
+                    "cash_balance_after",
+                    "status",
+                    "reason",
+                    "price_source",
+                ]
+            ]
+            st.dataframe(display_transactions, width="stretch", hide_index=True)
+            st.download_button(
+                label="Download Transactions",
+                data=transactions.to_csv(index=False),
+                file_name="paper_trading_transactions.csv",
+                mime="text/csv",
+            )
+
+    with scope_tab:
+        # Keeping scope visible in-app is intentional: this simulator is useful
+        # for practice, but it is not a real-time broker or matching engine.
+        st.write("### Data Delay")
+        st.write(
+            "This uses Yahoo Finance data through yfinance, not a paid exchange feed. Expect quotes to be delayed, "
+            "commonly around 15-20 minutes where intraday prices are available, and sometimes the most recent daily "
+            "close when markets are closed or a ticker has limited data."
+        )
+        st.write("### Portfolio Tab Components")
+        st.write(
+            "Virtual cash, positions value, account value, total return, realized P/L, open positions, average cost, "
+            "latest available price, cost basis, market value, unrealized P/L, and unrealized return percentage."
+        )
+        st.write("### Transaction Details Stored")
+        st.write(
+            "Timestamp, ticker, buy/sell side, share quantity, fill price, gross amount, realized P/L for sells, "
+            "cash balance after the order, status, rejection reason when applicable, and price source."
+        )
+        st.write("### Scope Check")
+        st.write(
+            "This is realistic as a small dashboard addition because it is single-user, local-only, market-order-only, "
+            "and has no login, real-time matching engine, margin, shorting, FX, or fees. A multi-user simulator with "
+            "limit orders, live quotes, and realistic fills should become a separate app."
+        )
 
 # Streamlit App
 def main():
@@ -983,6 +1518,7 @@ def main():
     st.sidebar.subheader("🔧 Analysis Options")
     show_ranking = st.sidebar.checkbox("🏆 Watchlist Ranking", value=True)
     show_backtest = st.sidebar.checkbox("🧪 Backtest Signals", value=False)
+    show_paper_trading = st.sidebar.checkbox("💼 Paper Trading", value=True)
     show_technical = st.sidebar.checkbox("📈 Technical Charts", value=True)
     show_performance = st.sidebar.checkbox("📊 Performance Metrics", value=True)
     show_analysis = st.sidebar.checkbox("🧠 AI Market Analysis", value=True)
@@ -1117,13 +1653,17 @@ def main():
             st.metric(label="🏢 Market Cap", value="N/A")
     
     st.markdown("---")
+
+    if show_paper_trading:
+        render_paper_trading_simulator(symbol, watchlist)
+        st.markdown("---")
     
     # Advanced Chart
     if show_technical:
         st.subheader("📈 Advanced Technical Analysis")
         with st.spinner("Creating advanced charts..."):
             chart = create_advanced_chart(data, symbol)
-            st.plotly_chart(chart, use_container_width=True)
+            st.plotly_chart(chart, width="stretch")
     
     # Performance Metrics
     if show_performance:
@@ -1186,7 +1726,7 @@ def main():
                     template='plotly_dark'
                 )
                 fig_importance.update_layout(height=400)
-                st.plotly_chart(fig_importance, use_container_width=True)
+                st.plotly_chart(fig_importance, width="stretch")
     
     # AI Market Analysis
     if show_analysis:
@@ -1252,7 +1792,7 @@ def main():
         st.write("### 📊 Recent Price Data")
         display_data = data[['Open', 'High', 'Low', 'Close', 'Volume']].tail(20)
         display_data.index = display_data.index.strftime('%Y-%m-%d')
-        st.dataframe(display_data, use_container_width=True)
+        st.dataframe(display_data, width="stretch")
         
         # Download option
         csv = display_data.to_csv()
@@ -1272,7 +1812,7 @@ def main():
         if available_columns:
             tech_data = data[available_columns].tail(10)
             tech_data.index = tech_data.index.strftime('%Y-%m-%d')
-            st.dataframe(tech_data.round(3), use_container_width=True)
+            st.dataframe(tech_data.round(3), width="stretch")
         else:
             st.warning("Technical indicators not available")
     
