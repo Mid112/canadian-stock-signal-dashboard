@@ -1476,37 +1476,36 @@ def render_paper_trading_simulator(current_symbol, watchlist):
         else:
             symbol_options = owned_symbols
 
-        with st.form("paper_trade_form"):
-            trade_col1, trade_col2 = st.columns([2, 1])
-            with trade_col1:
-                if side == "SELL" and not symbol_options:
-                    trade_symbol = ""
-                    st.info(
-                        "No sellable positions yet. Buy shares before placing a sell order.")
+        trade_col1, trade_col2 = st.columns([2, 1])
+        with trade_col1:
+            if side == "SELL" and not symbol_options:
+                trade_symbol = ""
+                st.info(
+                    "No sellable positions yet. Buy shares before placing a sell order.")
+            else:
+                selected_trade_symbol = st.selectbox(
+                    "Ticker", options=symbol_options)
+                if selected_trade_symbol == "Custom":
+                    # Streamlit does not expose select-on-focus for text
+                    # inputs, so an empty field plus placeholder avoids the
+                    # old backspace-everything workflow for custom symbols.
+                    trade_symbol = st.text_input(
+                        "Custom ticker",
+                        value="",
+                        placeholder=f"Example: {current_symbol}",
+                        max_chars=12,
+                    ).upper()
                 else:
-                    selected_trade_symbol = st.selectbox(
-                        "Ticker", options=symbol_options)
-                    if selected_trade_symbol == "Custom":
-                        # Streamlit does not expose select-on-focus for text
-                        # inputs, so an empty field plus placeholder avoids the
-                        # old backspace-everything workflow for custom symbols.
-                        trade_symbol = st.text_input(
-                            "Custom ticker",
-                            value="",
-                            placeholder=f"Example: {current_symbol}",
-                            max_chars=12,
-                        ).upper()
-                    else:
-                        trade_symbol = selected_trade_symbol
-            with trade_col2:
-                quantity = st.number_input(
-                    "Shares", min_value=1, value=1, step=1)
+                    trade_symbol = selected_trade_symbol
+        with trade_col2:
+            quantity = st.number_input(
+                "Shares", min_value=1, value=1, step=1)
 
-            submitted = st.form_submit_button(
-                "Place Market Order",
-                type="primary",
-                disabled=side == "SELL" and not symbol_options,
-            )
+        submitted = st.button(
+            "Place Market Order",
+            type="primary",
+            disabled=side == "SELL" and not symbol_options,
+        )
 
         if submitted:
             if side == "BUY" and not trade_symbol:
