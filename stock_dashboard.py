@@ -1519,14 +1519,19 @@ def render_paper_trading_simulator(current_symbol, watchlist):
                     "success" if result["ok"] else "error", result["message"])
                 st.rerun()
 
-        # Show the reference price separately from the order form so the user can
-        # see that fills are based on delayed latest-available market data.
-        price_info = get_latest_market_price(current_symbol)
-        if price_info:
-            st.info(
-                f"Current selected ticker reference: {current_symbol} latest available price "
-                f"{format_money(price_info['price'])}, timestamp {price_info['timestamp']}."
-            )
+        # Show the selected trade ticker price separately from the order form so
+        # the user can preview the delayed price used for a market-order fill.
+        if trade_symbol:
+            price_info = get_latest_market_price(trade_symbol)
+            if price_info:
+                st.info(
+                    f"Current selected ticker reference: {trade_symbol} latest available price "
+                    f"{format_money(price_info['price'])}, timestamp {price_info['timestamp']}."
+                )
+            else:
+                st.warning(f"No latest price available for {trade_symbol}.")
+        elif side == "BUY":
+            st.info("Choose a watchlist ticker or enter a custom ticker to preview its latest available price.")
         st.write(
             "Orders supported here: market buy and market sell only. No limit orders, stop orders, "
             "short selling, margin, commissions, FX conversion, slippage, partial fills, or market-hours checks."
